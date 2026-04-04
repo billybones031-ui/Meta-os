@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-os"
+version = "4.0.0"
+description = "Unified Claude + Gemini + Ollama AI super-agent for Infinite Signal Labs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot[ext]>=21.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiosqlite>=0.20.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "apscheduler>=3.10.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.27.0",
+    "gTTS>=2.5.0",
+    "tenacity>=8.3.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "watchfiles>=0.21.0",
+    "chromadb>=0.5.0",
+    "cryptography>=42.0.0",
+    "python-dotenv>=1.0.0",
+    "sse-starlette>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23.0"]
+
+[project.scripts]
+meta-os = "meta_os.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["meta_os"]
