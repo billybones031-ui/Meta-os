@@ -1,6 +1,19 @@
+# Web / API
 fastapi
 uvicorn[standard]
-python-telegram-bot
 httpx
 python-dotenv
 pydantic
+
+# Telegram
+python-telegram-bot
+
+# Routing config
+pyyaml
+
+# Memory
+chromadb
+mem0ai
+
+# Orchestration (optional — install when using CrewAI backend)
+# crewai

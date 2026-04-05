@@ -1,0 +1,23 @@
+# Mem0 configuration — loaded by orchestrator/memory.py via env vars.
+# Set the corresponding env vars in .env or export them before running.
+
+llm:
+  provider: ollama
+  config:
+    model: llama3.2:3b
+    ollama_base_url: http://localhost:11434
+
+embedder:
+  provider: ollama
+  config:
+    model: nomic-embed-text
+    ollama_base_url: http://localhost:11434
+
+vector_store:
+  provider: chroma
+  config:
+    collection_name: meta_os_memory
+    path: ./data/chroma
+
+# Optional: async consolidation window (seconds)
+consolidation_interval: 300

@@ -1,0 +1,23 @@
+# Bernstein-style routing rules
+# Evaluated in order — first match wins.
+# action: n8n | ollama | crewai
+#
+# Add keyword groups to override the default classifier routing.
+
+- match: [summarize, tldr, bullet points, outline]
+  action: ollama
+
+- match: [translate, convert, reformat, parse]
+  action: n8n
+
+- match: [research, analyze, compare, plan, strategy, write report]
+  action: crewai
+
+- match: [remind, schedule, notify, webhook, send email, post to]
+  action: n8n
+
+- match: [explain, what is, how does, teach me, describe]
+  action: ollama
+
+- match: [code, implement, build, refactor, debug, fix bug]
+  action: crewai

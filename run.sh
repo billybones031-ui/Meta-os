@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
+# Meta-OS v3.2 — quick dev launcher (no Go observer)
 set -e
 
-# Start FastAPI in background
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_DIR"
+
+[[ -f .venv/bin/activate ]] && source .venv/bin/activate
+
+PIDS=()
+stop_all() { kill "${PIDS[@]}" 2>/dev/null || true; exit 0; }
+trap stop_all INT TERM
+
 uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-FASTAPI_PID=$!
+PIDS+=($!)
+echo "[api] PID=${PIDS[-1]}"
 
-# Start Telegram bot in background
 python bot.py &
-BOT_PID=$!
+PIDS+=($!)
+echo "[bot] PID=${PIDS[-1]}"
 
-echo "Meta-OS started — FastAPI PID=$FASTAPI_PID, Bot PID=$BOT_PID"
-echo "Press Ctrl+C to stop."
-
-# Wait for either process to exit; kill both on exit
-trap "kill $FASTAPI_PID $BOT_PID 2>/dev/null; exit" INT TERM
-wait $FASTAPI_PID $BOT_PID
+echo "Meta-OS running — Ctrl+C to stop."
+wait "${PIDS[@]}"
