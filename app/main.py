@@ -1,30 +1,46 @@
 """
 Meta-OS FastAPI gateway — port 8000
 
-Endpoints:
-  POST /run         — classify, route, execute
+HTTP endpoints:
+  GET  /            — chat UI (mobile + desktop)
   GET  /health      — liveness probe
-  GET  /stream      — SSE stream of observer logs
-  GET  /dashboard   — minimal HTML dashboard (SSE consumer)
+  GET  /history     — last N messages (JSON)
+  POST /run         — classify, route, execute (REST)
+  GET  /memory/{id} — recall stored memories
+  GET  /stream      — SSE observer log stream
+  GET  /dashboard   — live log dashboard
+
+WebSocket:
+  WS   /ws          — real-time chat (preferred by UI)
 """
 
 from __future__ import annotations
 
 import asyncio
-import httpx
+import json
 import os
+import uuid
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+import httpx
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from orchestrator.router import route_and_execute
 from orchestrator import memory as mem
+from app.db import init_db, save_message, get_history, set_pending, get_pending, clear_pending
+from app.ui import CHAT_HTML
 
 app = FastAPI(title="Meta-OS", version="3.2.0")
 
 OBSERVER_URL = os.getenv("OBSERVER_URL", "http://localhost:8081")
+DEFAULT_USER = os.getenv("META_OS_USER_ID", "bones")
+
+
+@app.on_event("startup")
+async def startup():
+    init_db()
 
 
 # --------------------------------------------------------------------------- #
@@ -33,7 +49,7 @@ OBSERVER_URL = os.getenv("OBSERVER_URL", "http://localhost:8081")
 
 class TaskRequest(BaseModel):
     task: str
-    user_id: str = "default"
+    user_id: str = DEFAULT_USER
 
 
 # --------------------------------------------------------------------------- #
@@ -41,7 +57,6 @@ class TaskRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 
 async def _log(message: str, level: str = "info", source: str = "api") -> None:
-    """Fire-and-forget: post a log entry to the Go observer."""
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             await client.post(
@@ -49,32 +64,16 @@ async def _log(message: str, level: str = "info", source: str = "api") -> None:
                 json={"level": level, "source": source, "message": message},
             )
     except Exception:
-        pass  # observer unavailable — don't crash the request
+        pass
 
 
-# --------------------------------------------------------------------------- #
-# Routes
-# --------------------------------------------------------------------------- #
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "3.2.0"}
-
-
-@app.post("/run")
-async def run(request: TaskRequest):
-    task = request.task.strip()
-    user_id = request.user_id
-
-    await _log(f"[{user_id}] task='{task[:80]}'", source="api")
-
-    # Inject relevant memory as context prefix
+async def _execute(task: str, user_id: str, session_id: str) -> dict:
+    """Core: memory inject → route → execute → persist."""
     memory_ctx = mem.context_block(user_id, task)
-    enriched_task = f"{memory_ctx}\n{task}" if memory_ctx else task
+    enriched = f"{memory_ctx}\n{task}" if memory_ctx else task
 
-    result = await route_and_execute(enriched_task)
+    result = await route_and_execute(enriched)
 
-    # Persist non-destructive tasks to memory
     if result.get("status") == "done":
         mem.add(user_id, task)
 
@@ -85,38 +84,129 @@ async def run(request: TaskRequest):
     return result
 
 
+# --------------------------------------------------------------------------- #
+# REST endpoints
+# --------------------------------------------------------------------------- #
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "3.2.0"}
+
+
+@app.get("/history")
+async def history(limit: int = 120):
+    return {"messages": get_history(limit)}
+
+
+@app.delete("/history")
+async def delete_history():
+    from app.db import clear_history
+    clear_history()
+    return {"status": "cleared"}
+
+
+@app.post("/run")
+async def run(request: TaskRequest):
+    task = request.task.strip()
+    save_message("user", task)
+    await _log(f"[{request.user_id}] task='{task[:80]}'", source="api")
+    result = await _execute(task, request.user_id, "rest")
+    save_message("assistant", result.get("result", str(result)), {"backend": result.get("backend"), "status": result.get("status")})
+    return result
+
+
 @app.get("/memory/{user_id}")
 async def get_memory(user_id: str, q: str = ""):
-    memories = mem.search(user_id, q or "recent") if q else mem.search(user_id, "")
+    memories = mem.search(user_id, q or "recent")
     return {"user_id": user_id, "memories": memories}
 
 
 # --------------------------------------------------------------------------- #
-# SSE log stream
+# WebSocket chat
+# --------------------------------------------------------------------------- #
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    session_id = str(uuid.uuid4())
+    user_id = DEFAULT_USER
+
+    # Send history on connect so any device picks up right where it left off
+    history = get_history(120)
+    await ws.send_text(json.dumps({"type": "history", "messages": history}))
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                data = {"text": raw}
+
+            text = data.get("text", "").strip()
+            if not text:
+                continue
+
+            # YES confirmation
+            if text.upper() == "YES":
+                pending = get_pending(session_id)
+                if pending:
+                    clear_pending(session_id)
+                    await ws.send_text(json.dumps({"type": "system", "content": "Executing confirmed task..."}))
+                    result = await _execute(f"[CONFIRMED] {pending}", user_id, session_id)
+                    reply = result.get("result", str(result))
+                    meta = {"backend": result.get("backend"), "status": result.get("status")}
+                    save_message("assistant", reply, meta)
+                    await ws.send_text(json.dumps({"type": "assistant", "content": reply, "meta": meta}))
+                    continue
+                # No pending — fall through and treat as normal message
+
+            # Clear stale pending if user sends something other than YES
+            if get_pending(session_id):
+                clear_pending(session_id)
+                await ws.send_text(json.dumps({"type": "system", "content": "Confirmation cancelled."}))
+
+            save_message("user", text)
+            await _log(f"[ws/{user_id}] '{text[:80]}'", source="ws")
+
+            result = await _execute(text, user_id, session_id)
+
+            if result.get("status") == "confirm_required":
+                set_pending(session_id, result["task"])
+                msg = f"⚠️ Destructive task detected:\n\"{result['task']}\"\n\nType YES to confirm, or send anything else to cancel."
+                save_message("assistant", msg, {"status": "confirm_required"})
+                await ws.send_text(json.dumps({"type": "confirm", "content": msg, "task": result["task"]}))
+            else:
+                reply = result.get("result", str(result))
+                meta = {"backend": result.get("backend"), "status": result.get("status")}
+                save_message("assistant", reply, meta)
+                await ws.send_text(json.dumps({"type": "assistant", "content": reply, "meta": meta}))
+
+    except WebSocketDisconnect:
+        clear_pending(session_id)
+
+
+# --------------------------------------------------------------------------- #
+# SSE observer log stream
 # --------------------------------------------------------------------------- #
 
 async def _sse_log_stream() -> AsyncIterator[str]:
-    """
-    Poll the observer's /logs endpoint and push new lines as SSE events.
-    Tracks offset to avoid re-sending old lines.
-    """
-    seen: int = 0
+    seen = 0
     while True:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(f"{OBSERVER_URL}/logs?n=200")
             lines = [l for l in r.text.splitlines() if l.strip()]
-            new_lines = lines[seen:]
-            for line in new_lines:
+            for line in lines[seen:]:
                 yield f"data: {line}\n\n"
             seen = len(lines)
         except Exception:
-            yield "data: {\"message\":\"observer unavailable\"}\n\n"
+            yield 'data: {"message":"observer unavailable"}\n\n'
         await asyncio.sleep(1)
 
 
 @app.get("/stream")
-async def stream_logs(request: Request):
+async def stream_logs():
     return StreamingResponse(
         _sse_log_stream(),
         media_type="text/event-stream",
@@ -125,45 +215,15 @@ async def stream_logs(request: Request):
 
 
 # --------------------------------------------------------------------------- #
-# HTML dashboard
+# UI
 # --------------------------------------------------------------------------- #
 
-_DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Meta-OS Dashboard</title>
-  <style>
-    body { background:#0d1117; color:#c9d1d9; font-family:monospace; padding:1rem; }
-    h1   { color:#58a6ff; margin-bottom:.5rem; }
-    #log { height:85vh; overflow-y:auto; border:1px solid #30363d;
-           padding:.5rem; border-radius:4px; font-size:.8rem; }
-    .info  { color:#c9d1d9; }
-    .warn  { color:#e3b341; }
-    .error { color:#f85149; }
-  </style>
-</head>
-<body>
-<h1>Meta-OS v3.2 — Live Logs</h1>
-<div id="log"></div>
-<script>
-  const box = document.getElementById('log');
-  const es  = new EventSource('/stream');
-  es.onmessage = e => {
-    try {
-      const obj = JSON.parse(e.data);
-      const div = document.createElement('div');
-      div.className = obj.level || 'info';
-      div.textContent = `[${obj.ts || ''}] [${obj.source || '-'}] ${obj.message}`;
-      box.appendChild(div);
-      box.scrollTop = box.scrollHeight;
-    } catch (_) {}
-  };
-</script>
-</body>
-</html>"""
+@app.get("/", response_class=HTMLResponse)
+async def chat_ui():
+    return HTMLResponse(CHAT_HTML)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
-    return HTMLResponse(_DASHBOARD_HTML)
+    from app.ui import LOG_HTML
+    return HTMLResponse(LOG_HTML)

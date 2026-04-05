@@ -1,0 +1,114 @@
+"""
+Persistent SQLite store for conversation history.
+
+Tables:
+  messages — every user/assistant turn, with metadata
+  pending  — pending confirmation tasks per session
+
+The DB lives at data/meta_os.db so it survives restarts and is shared
+by every client (phone, laptop) that hits the same server.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+DB_PATH = Path("data/meta_os.db")
+
+
+# --------------------------------------------------------------------------- #
+# Init
+# --------------------------------------------------------------------------- #
+
+def init_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _conn() as c:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT    NOT NULL,
+                role    TEXT    NOT NULL,   -- 'user' | 'assistant' | 'system'
+                content TEXT    NOT NULL,
+                meta    TEXT    DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_tasks (
+                session_id  TEXT PRIMARY KEY,
+                task        TEXT NOT NULL,
+                ts          TEXT NOT NULL
+            );
+        """)
+
+
+def _conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Messages
+# --------------------------------------------------------------------------- #
+
+def save_message(role: str, content: str, meta: Optional[dict] = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO messages (ts, role, content, meta) VALUES (?, ?, ?, ?)",
+            (_now(), role, content, json.dumps(meta or {})),
+        )
+        return cur.lastrowid
+
+
+def get_history(limit: int = 120) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT ts, role, content, meta FROM messages ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "ts":      r["ts"],
+            "role":    r["role"],
+            "content": r["content"],
+            "meta":    json.loads(r["meta"]),
+        }
+        for r in reversed(rows)
+    ]
+
+
+def clear_history() -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM messages")
+
+
+# --------------------------------------------------------------------------- #
+# Pending confirmations (per WebSocket session)
+# --------------------------------------------------------------------------- #
+
+def set_pending(session_id: str, task: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO pending_tasks (session_id, task, ts) VALUES (?, ?, ?)",
+            (session_id, task, _now()),
+        )
+
+
+def get_pending(session_id: str) -> Optional[str]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT task FROM pending_tasks WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return row["task"] if row else None
+
+
+def clear_pending(session_id: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM pending_tasks WHERE session_id = ?", (session_id,))
