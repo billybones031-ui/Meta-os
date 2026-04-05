@@ -2,16 +2,22 @@
 Meta-OS FastAPI gateway — port 8000
 
 HTTP endpoints:
-  GET  /            — chat UI (mobile + desktop)
-  GET  /health      — liveness probe
-  GET  /history     — last N messages (JSON)
-  POST /run         — classify, route, execute (REST)
-  GET  /memory/{id} — recall stored memories
-  GET  /stream      — SSE observer log stream
-  GET  /dashboard   — live log dashboard
+  GET    /              — chat UI (mobile + desktop)
+  GET    /health        — liveness probe
+  GET    /history       — last N messages (JSON)
+  DELETE /history       — clear all history
+  POST   /run           — classify, route, execute (REST)
+  GET    /memory/{id}   — recall stored memories
+  GET    /stats         — live stats (messages, backends, hourly)
+  GET    /todos         — list all todos
+  POST   /todos         — create todo
+  PATCH  /todos/{id}    — toggle done
+  DELETE /todos/{id}    — delete todo
+  GET    /stream        — SSE observer log stream
+  GET    /dashboard     — live log dashboard
 
 WebSocket:
-  WS   /ws          — real-time chat (preferred by UI)
+  WS     /ws            — real-time chat (preferred by UI)
 """
 
 from __future__ import annotations
@@ -29,7 +35,12 @@ from pydantic import BaseModel
 
 from orchestrator.router import route_and_execute
 from orchestrator import memory as mem
-from app.db import init_db, save_message, get_history, set_pending, get_pending, clear_pending
+from app.db import (
+    init_db, save_message, get_history, clear_history,
+    set_pending, get_pending, clear_pending,
+    todo_add, todo_list, todo_toggle, todo_delete,
+    get_stats,
+)
 from app.ui import CHAT_HTML
 
 app = FastAPI(title="Meta-OS", version="3.2.0")
@@ -100,7 +111,6 @@ async def history(limit: int = 120):
 
 @app.delete("/history")
 async def delete_history():
-    from app.db import clear_history
     clear_history()
     return {"status": "cleared"}
 
@@ -119,6 +129,47 @@ async def run(request: TaskRequest):
 async def get_memory(user_id: str, q: str = ""):
     memories = mem.search(user_id, q or "recent")
     return {"user_id": user_id, "memories": memories}
+
+
+# --------------------------------------------------------------------------- #
+# Stats
+# --------------------------------------------------------------------------- #
+
+@app.get("/stats")
+async def stats():
+    return get_stats()
+
+
+# --------------------------------------------------------------------------- #
+# Todos
+# --------------------------------------------------------------------------- #
+
+class TodoCreate(BaseModel):
+    content: str
+
+
+@app.get("/todos")
+async def list_todos():
+    return todo_list()
+
+
+@app.post("/todos", status_code=201)
+async def create_todo(body: TodoCreate):
+    return todo_add(body.content)
+
+
+@app.patch("/todos/{todo_id}")
+async def toggle_todo(todo_id: int):
+    item = todo_toggle(todo_id)
+    if item is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, "not found")
+    return item
+
+
+@app.delete("/todos/{todo_id}", status_code=204)
+async def delete_todo(todo_id: int):
+    todo_delete(todo_id)
 
 
 # --------------------------------------------------------------------------- #
