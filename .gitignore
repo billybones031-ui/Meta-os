@@ -1,0 +1,23 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Data (local DB + logs)
+data/
+
+# Go build artifacts
+observer/observer_bin
+
+# Editor
+.DS_Store
+*.swp
+*.swo

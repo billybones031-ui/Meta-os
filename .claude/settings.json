@@ -19,12 +19,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; if [[ \"$f\" =~ \\.(js|ts|tsx|jsx|json|yaml|yml)$ ]]; then prettier --write \"$f\" 2>/dev/null || true; fi; }",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path // empty' | { read -r f || exit 0; case \"$f\" in *.js|*.ts|*.tsx|*.jsx|*.json|*.yaml|*.yml) prettier --write \"$f\" 2>/dev/null || true;; esac; }",
             "statusMessage": "Formatting with Prettier…"
           },
           {
             "type": "command",
-            "command": "if [[ -f package.json ]]; then npm test 2>/dev/null || true; elif [[ -f pytest.ini ]] || [[ -f setup.py ]]; then pytest 2>/dev/null || true; fi",
+            "command": "if [ -f package.json ]; then npm test 2>/dev/null || true; elif [ -f pytest.ini ] || [ -f setup.py ] || [ -f pyproject.toml ]; then pytest 2>/dev/null || true; fi",
             "statusMessage": "Running tests…",
             "async": true
           }
