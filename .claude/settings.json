@@ -1,0 +1,39 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Read",
+      "Glob",
+      "Grep",
+      "Edit",
+      "Write"
+    ],
+    "defaultMode": "default"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; if [[ \"$f\" =~ \\.(js|ts|tsx|jsx|json|yaml|yml)$ ]]; then prettier --write \"$f\" 2>/dev/null || true; fi; }",
+            "statusMessage": "Formatting with Prettier…"
+          },
+          {
+            "type": "command",
+            "command": "if [[ -f package.json ]]; then npm test 2>/dev/null || true; elif [[ -f pytest.ini ]] || [[ -f setup.py ]]; then pytest 2>/dev/null || true; fi",
+            "statusMessage": "Running tests…",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "respectGitignore": true,
+  "autoMemoryEnabled": true,
+  "spinnerTipsEnabled": true,
+  "alwaysThinkingEnabled": true
+}
