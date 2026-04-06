@@ -29,8 +29,9 @@ import uuid
 from typing import AsyncIterator
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from orchestrator.router import route_and_execute
@@ -47,6 +48,16 @@ app = FastAPI(title="Meta-OS", version="3.2.0")
 
 OBSERVER_URL = os.getenv("OBSERVER_URL", "http://localhost:8081")
 DEFAULT_USER = os.getenv("META_OS_USER_ID", "bones")
+API_KEY      = os.getenv("META_OS_API_KEY", "")
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def _auth(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
+    if not API_KEY:
+        return  # no key configured → open (dev mode)
+    if creds is None or creds.credentials != API_KEY:
+        raise HTTPException(401, "invalid or missing API key")
 
 
 @app.on_event("startup")
@@ -110,13 +121,13 @@ async def history(limit: int = 120):
 
 
 @app.delete("/history")
-async def delete_history():
+async def delete_history(_: None = Depends(_auth)):
     clear_history()
     return {"status": "cleared"}
 
 
 @app.post("/run")
-async def run(request: TaskRequest):
+async def run(request: TaskRequest, _: None = Depends(_auth)):
     task = request.task.strip()
     save_message("user", task)
     await _log(f"[{request.user_id}] task='{task[:80]}'", source="api")
@@ -136,7 +147,7 @@ async def get_memory(user_id: str, q: str = ""):
 # --------------------------------------------------------------------------- #
 
 @app.get("/stats")
-async def stats():
+async def stats(_: None = Depends(_auth)):
     return get_stats()
 
 
@@ -162,7 +173,6 @@ async def create_todo(body: TodoCreate):
 async def toggle_todo(todo_id: int):
     item = todo_toggle(todo_id)
     if item is None:
-        from fastapi import HTTPException
         raise HTTPException(404, "not found")
     return item
 
@@ -243,17 +253,17 @@ async def websocket_endpoint(ws: WebSocket):
 
 async def _sse_log_stream() -> AsyncIterator[str]:
     seen = 0
-    while True:
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(timeout=5) as client:
+        while True:
+            try:
                 r = await client.get(f"{OBSERVER_URL}/logs?n=200")
-            lines = [l for l in r.text.splitlines() if l.strip()]
-            for line in lines[seen:]:
-                yield f"data: {line}\n\n"
-            seen = len(lines)
-        except Exception:
-            yield 'data: {"message":"observer unavailable"}\n\n'
-        await asyncio.sleep(1)
+                lines = [l for l in r.text.splitlines() if l.strip()]
+                for line in lines[seen:]:
+                    yield f"data: {line}\n\n"
+                seen = len(lines)
+            except Exception:
+                yield 'data: {"message":"observer unavailable"}\n\n'
+            await asyncio.sleep(1)
 
 
 @app.get("/stream")

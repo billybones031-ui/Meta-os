@@ -53,10 +53,16 @@ def init_db() -> None:
         """)
 
 
+_local = __import__("threading").local()
+
+
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if not getattr(_local, "conn", None):
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn = conn
+    return _local.conn
 
 
 def _now() -> str:

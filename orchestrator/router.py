@@ -27,10 +27,19 @@ OLLAMA_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
 
+_routes_cache: list[dict] | None = None
+_routes_mtime: float = 0.0
+
+
 def _load_routes() -> list[dict]:
-    if ROUTES_FILE.exists():
-        return yaml.safe_load(ROUTES_FILE.read_text()) or []
-    return []
+    global _routes_cache, _routes_mtime
+    if not ROUTES_FILE.exists():
+        return []
+    mtime = ROUTES_FILE.stat().st_mtime
+    if _routes_cache is None or mtime != _routes_mtime:
+        _routes_cache = yaml.safe_load(ROUTES_FILE.read_text()) or []
+        _routes_mtime = mtime
+    return _routes_cache
 
 
 def _bernstein_match(task: str) -> str | None:
@@ -92,7 +101,7 @@ async def _call_crewai(task: str) -> str:
         except Exception as exc:
             return f"[crewai error] {exc}"
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _run)
 
 
