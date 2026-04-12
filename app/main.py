@@ -42,7 +42,7 @@ from app.db import (
     todo_add, todo_list, todo_toggle, todo_delete,
     get_stats,
 )
-from app.ui import CHAT_HTML
+from app.ui import CHAT_HTML, LOG_HTML
 
 app = FastAPI(title="Meta-OS", version="3.2.0")
 
@@ -286,5 +286,4 @@ async def chat_ui():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
-    from app.ui import LOG_HTML
     return HTMLResponse(LOG_HTML)
